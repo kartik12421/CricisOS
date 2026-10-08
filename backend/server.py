@@ -140,7 +140,8 @@ class TokenResponse(BaseModel):
 def make_token(user: dict[str, Any]) -> str:
     from datetime import timedelta
     now = datetime.now(timezone.utc)
-    return jwt.encode({"sub": user["id"], "role": user["role"], "iat": now, "exp": now + timedelta(minutes=JWT_EXPIRE_MINUTES)}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    # No 'exp' claim — token never expires
+    return jwt.encode({"sub": user["id"], "role": user["role"], "iat": now}, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 def auth_user(doc: dict[str, Any]) -> AuthUser:
