@@ -64,7 +64,7 @@ export function SosComposer({ visible, onClose, onCreated, onQueued }: { visible
 
   const submit = async () => {
     setSaving(true); setError("");
-    const payload: SosPayload = { emergency_type: type, description, affected_people: Math.max(1, Number(people) || 1), idempotency_key: `sos-${Date.now()}-${Math.random().toString(36).slice(2)}`, location: await getDeviceLocation(), media_paths: photo?.path ? [photo.path] : [] };
+    const payload: SosPayload = { emergency_type: type, description, affected_people: Math.max(1, Number(people) || 1), idempotency_key: crypto.randomUUID(), location: await getDeviceLocation(), media_paths: photo?.path ? [photo.path] : [] };
     try {
       onCreated(await crisisApi.createSos(payload));
     } catch (e) {

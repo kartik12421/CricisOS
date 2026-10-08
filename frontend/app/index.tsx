@@ -93,13 +93,16 @@ function CitizenView({ signal }: { signal: number }) {
     if (canListen) window.addEventListener("online", onOnline);
     return () => { cancelled = true; clearInterval(timer); if (canListen) window.removeEventListener("online", onOnline); };
   }, [refresh]);
-  const active = incidents.find((item) => !["RESOLVED", "CLOSED", "CANCELLED"].includes(item.status));
+  // Show SOS button always (allow multiple concurrent emergencies)
+  const hasActiveIncident = incidents.some((item) => !["RESOLVED", "CLOSED", "CANCELLED"].includes(item.status));
+  const activeIncident = incidents.find((item) => !["RESOLVED", "CLOSED", "CANCELLED"].includes(item.status));
   return <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
     <View style={styles.sectionHeader}><View style={styles.flex}><Text style={styles.eyebrow}>PERSONAL SAFETY</Text><Text style={styles.screenTitle}>Ready when you need us.</Text></View><View style={styles.locationBadge}><Ionicons name="location-outline" size={15} color={colors.success} /><Text style={styles.locationText}>LOCATION READY</Text></View></View>
     {error ? <Notice text={error} tone="error" onPress={refresh} /> : null}
     <AlertsStrip alerts={alerts} />
     {queued > 0 ? <View testID="sos-outbox-banner"><Notice text={`${queued} SOS ${queued === 1 ? "is" : "are"} queued offline — auto-send when connection returns.`} tone="info" /></View> : null}
-    {active ? <StatusCard incident={active} /> : <View style={styles.sosPanel}><Text style={styles.sosEyebrow}>EMERGENCY SIGNAL</Text><Text style={styles.sosTitle}>Need immediate help?</Text><Text style={styles.sosBody}>Your location and emergency details will be shared with the Command Center after confirmation.</Text><Pressable testID="send-sos" accessibilityRole="button" onPress={() => setComposer(true)} style={({ pressed }) => [styles.sosButton, pressed && styles.sosPressed]}><Ionicons name="alert-circle" size={32} color={colors.onBrandPrimary} /><Text style={styles.sosButtonText}>SEND SOS</Text></Pressable><Text style={styles.sosHint}>Only press for a real emergency</Text></View>}
+    {hasActiveIncident && activeIncident ? <StatusCard incident={activeIncident} /> : null}
+    <View style={styles.sosPanel}><Text style={styles.sosEyebrow}>EMERGENCY SIGNAL</Text><Text style={styles.sosTitle}>Need immediate help?</Text><Text style={styles.sosBody}>Your location and emergency details will be shared with the Command Center after confirmation.</Text><Pressable testID="send-sos" accessibilityRole="button" onPress={() => setComposer(true)} style={({ pressed }) => [styles.sosButton, pressed && styles.sosPressed]}><Ionicons name="alert-circle" size={32} color={colors.onBrandPrimary} /><Text style={styles.sosButtonText}>SEND SOS</Text></Pressable><Text style={styles.sosHint}>Only press for a real emergency</Text></View>
     <View style={styles.sectionHeader}><Text style={styles.sectionTitle}>RECENT INCIDENTS</Text>{loading ? <ActivityIndicator color={colors.brandSecondary} /> : null}</View>
     {incidents.length === 0 && !loading ? <EmptyState icon="shield-checkmark-outline" text="No active emergency history." /> : incidents.slice(0, 3).map((incident) => <IncidentRow key={incident.id} incident={incident} />)}
     <View style={styles.infoStrip}><Ionicons name="information-circle-outline" size={19} color={colors.info} /><Text style={styles.infoText}>Location sharing is used only when you send an SOS. You stay in control.</Text></View>
