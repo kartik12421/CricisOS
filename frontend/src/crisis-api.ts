@@ -27,6 +27,39 @@ export type SosPayload = { emergency_type: EmergencyType; description: string; a
 export type CrisisEvent = { type: string; payload: Record<string, unknown>; at: string };
 export type PickedImage = { uri: string; fileName?: string | null; mimeType?: string | null };
 
+// Operator → Citizen assignment types
+export type OperatorAssignmentStatus = "ASSIGNED" | "EN_ROUTE" | "ON_SCENE" | "COMPLETED" | "CANCELLED";
+export type OperatorAssignment = {
+  id: string;
+  operator_id: string;
+  operator_name: string;
+  incident_id: string;
+  citizen_id: string;
+  citizen_name: string;
+  status: OperatorAssignmentStatus;
+  assigned_at: string;
+  updated_at: string;
+  note: string;
+  incident?: Incident;
+};
+export type NearestIncident = {
+  id: string;
+  sos_id: string;
+  title: string;
+  description: string;
+  type: EmergencyType;
+  status: string;
+  severity: string;
+  location: { source?: string; coordinates?: number[]; accuracy?: number | null };
+  affected_people: number;
+  ai_analysis: { summary: string; required_capabilities: string[]; confidence: number; risks: string[]; human_approval_required: boolean; provider?: string };
+  media?: IncidentMedia[];
+  reported_by: string | null;
+  reported_by_name: string | null;
+  created_at: string;
+  distance_km: number;
+};
+
 type TokenResponse = { access_token: string; token_type: string; user: { id: string; name: string; email: string; role: Role; organization_id: string } };
 
 const configuredBaseUrl = Constants.expoConfig?.extra?.backendUrl ?? process.env.EXPO_PUBLIC_BACKEND_URL ?? process.env.EXPO_BACKEND_URL;
@@ -216,6 +249,21 @@ export const crisisApi = {
   approveDispatch: (incidentId: string, responderId: string) => request<Assignment>(`/incidents/${incidentId}/approve-dispatch`, { method: "POST", body: JSON.stringify({ responder_id: responderId }) }),
   updateAssignment: (assignmentId: string, status: string, note = "") => request<Assignment>(`/assignments/${assignmentId}/status`, { method: "PATCH", body: JSON.stringify({ status, note }) }),
   updateResponderLocation: (responderId: string, location: Record<string, unknown>) => request<Responder>(`/responders/${responderId}/location`, { method: "PATCH", body: JSON.stringify({ location }) }),
+
+  // Operator → Citizen direct assignment
+  getNearestIncidents: (lon: number, lat: number, maxDistanceKm = 50, limit = 5) =>
+    request<NearestIncident[]>(`/operator/incidents/nearest?lon=${lon}&lat=${lat}&max_distance_km=${maxDistanceKm}&limit=${limit}`),
+  createOperatorAssignment: (incidentId: string) =>
+    request<OperatorAssignment>("/operator/assignments", { method: "POST", body: JSON.stringify({ incident_id: incidentId }) }),
+  getActiveOperatorAssignment: () =>
+    request<OperatorAssignment | null>("/operator/assignments/active"),
+  updateOperatorLocation: (location: Record<string, unknown>) =>
+    request<{ status: string }>("/operator/location", { method: "PATCH", body: JSON.stringify({ location }) }),
+  updateOperatorAssignmentStatus: (assignmentId: string, status: OperatorAssignmentStatus, note = "") =>
+    request<OperatorAssignment>(`/operator/assignments/${assignmentId}/status`, { method: "PATCH", body: JSON.stringify({ status, note }) }),
+  locateCitizen: (assignmentId: string) =>
+    request<{ success: boolean; message: string }>(`/operator/assignments/${assignmentId}/locate-citizen`, { method: "POST" }),
+
   /** Multipart upload through our API to Emergent object storage. Web sends a real
    *  Blob (the {uri} shape breaks on react-native-web); never set Content-Type. */
   uploadMedia: async (asset: PickedImage): Promise<{ id: string; path: string; content_type: string }> => {

@@ -7,6 +7,7 @@ import { Image } from "expo-image";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Linking, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
+import * as Crypto from "expo-crypto";
 
 import { crisisApi, EmergencyType, enqueueSos, Incident, isNetworkError, SosPayload } from "@/src/crisis-api";
 import { ensureLocationPermission, getDeviceLocation, LocationPermission } from "@/src/location";
@@ -64,7 +65,7 @@ export function SosComposer({ visible, onClose, onCreated, onQueued }: { visible
 
   const submit = async () => {
     setSaving(true); setError("");
-    const payload: SosPayload = { emergency_type: type, description, affected_people: Math.max(1, Number(people) || 1), idempotency_key: crypto.randomUUID(), location: await getDeviceLocation(), media_paths: photo?.path ? [photo.path] : [] };
+    const payload: SosPayload = { emergency_type: type, description, affected_people: Math.max(1, Number(people) || 1), idempotency_key: Crypto.randomUUID(), location: await getDeviceLocation(), media_paths: photo?.path ? [photo.path] : [] };
     try {
       onCreated(await crisisApi.createSos(payload));
     } catch (e) {

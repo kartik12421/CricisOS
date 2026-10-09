@@ -3048,6 +3048,11 @@ expo-constants@^57.0.19, expo-constants@~57.0.19, expo-constants@57.0.19:
   dependencies:
     "@expo/env" "~2.4.3"
 
+expo-crypto@57.0.3:
+  version "57.0.3"
+  resolved "https://registry.npmjs.org/expo-crypto/-/expo-crypto-57.0.3.tgz"
+  integrity sha512-SAWqEfF37nc8ot7bXsVmu9AFYwQdC2kGvH/eNAHiR3bmlcf1Vv8wu9AnGKT+a90r3T8YfwMpZP4QAYlo4vCn9w==
+
 expo-doctor@1.19.8:
   version "1.19.8"
   resolved "https://registry.npmjs.org/expo-doctor/-/expo-doctor-1.19.8.tgz"

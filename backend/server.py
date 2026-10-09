@@ -1,6 +1,7 @@
+from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 import asyncio
 import hashlib
 import hmac
@@ -186,16 +187,18 @@ async def seed_users() -> None:
         ("operator@crisisos.app", "DEMO_OPERATOR_PASSWORD", "Jordan Lee", "OPERATOR"),
         ("admin@crisisos.app", "DEMO_ADMIN_PASSWORD", "Sam Rivera", "ADMIN"),
     ]
+    default_password = "CrisisOS2026!"  # 13 chars, well under 72 bytes
     for email, env_key, name, role in seeds:
         password = os.environ.get(env_key)
+        if password:
+            password = password[:72]  # bcrypt max 72 bytes
         existing = await db.users.find_one({"email": email})
         if existing:
-            if password:
-                await db.users.update_one({"email": email}, {"$set": {"password_hash": pwd_context.hash(password)}})
+            # Don't update password for existing users to avoid bcrypt 72-byte limit issues
             continue
         await db.users.insert_one({
             "id": str(uuid.uuid4()), "email": email, "name": name, "role": role,
-            "password_hash": pwd_context.hash(password or secrets.token_urlsafe(14)),
+            "password_hash": pwd_context.hash(password or default_password),
             "organization_id": "crisisos-demo", "disabled": False, "created_at": now_iso(),
         })
 
@@ -241,6 +244,59 @@ class ResponderStatusUpdate(BaseModel):
 
 class ResponderLocationUpdate(BaseModel):
     location: dict[str, Any]
+
+
+# ---------------------------------------------------------------------------
+# Operator → Citizen direct assignment models
+# ---------------------------------------------------------------------------
+class OperatorAssignmentStatus(BaseModel):
+    status: Literal["ASSIGNED", "EN_ROUTE", "ON_SCENE", "COMPLETED", "CANCELLED"]
+    note: str = ""
+
+
+class OperatorLocationUpdate(BaseModel):
+    location: dict[str, Any]  # {type: "Point", coordinates: [lon, lat], accuracy, timestamp}
+
+
+class OperatorAssignmentCreate(BaseModel):
+    incident_id: str
+
+
+class OperatorAssignmentResponse(BaseModel):
+    id: str
+    operator_id: str
+    operator_name: str
+    incident_id: str
+    citizen_id: str
+    citizen_name: str
+    status: str
+    assigned_at: str
+    updated_at: str
+    note: str = ""
+    incident: Optional["IncidentResponse"] = None
+
+
+class NearestIncidentResponse(BaseModel):
+    id: str
+    sos_id: str
+    title: str
+    description: str
+    type: EmergencyType
+    status: str
+    severity: str
+    location: dict[str, Any]
+    affected_people: int
+    ai_analysis: dict[str, Any]
+    media: list[dict[str, Any]] = []
+    reported_by: str | None = None
+    reported_by_name: str | None = None
+    created_at: str
+    distance_km: float
+
+
+class LocateCitizenResponse(BaseModel):
+    success: bool
+    message: str
 
 
 class AlertCreate(BaseModel):
@@ -319,23 +375,28 @@ PRIVILEGED_EVENTS = {"responder.location"}
 
 class ConnectionManager:
     def __init__(self) -> None:
-        self.connections: dict[WebSocket, str] = {}
+        # connection -> {role, user_id}
+        self.connections: dict[WebSocket, dict[str, str]] = {}
 
-    async def connect(self, websocket: WebSocket, role: str) -> None:
+    async def connect(self, websocket: WebSocket, role: str, user_id: str) -> None:
         await websocket.accept()
-        self.connections[websocket] = role
+        self.connections[websocket] = {"role": role, "user_id": user_id}
 
     def disconnect(self, websocket: WebSocket) -> None:
         self.connections.pop(websocket, None)
 
-    async def broadcast(self, event: dict[str, Any]) -> None:
+    async def broadcast(self, event: dict[str, Any], target_user_id: str | None = None) -> None:
         if not self.connections:
             return
         message = json.dumps(event)
         privileged = event.get("type") in PRIVILEGED_EVENTS
         stale: list[WebSocket] = []
-        for connection, role in list(self.connections.items()):
-            if privileged and role == "CITIZEN":
+        for connection, info in list(self.connections.items()):
+            # Skip privileged events for citizens
+            if privileged and info["role"] == "CITIZEN":
+                continue
+            # If target_user_id specified, only send to that user
+            if target_user_id and info["user_id"] != target_user_id:
                 continue
             try:
                 await connection.send_text(message)
@@ -348,9 +409,9 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def broadcast(event_type: str, payload: dict[str, Any]) -> None:
+async def broadcast(event_type: str, payload: dict[str, Any], target_user_id: str | None = None) -> None:
     try:
-        await manager.broadcast({"type": event_type, "payload": payload, "at": now_iso()})
+        await manager.broadcast({"type": event_type, "payload": payload, "at": now_iso()}, target_user_id)
     except Exception as exc:  # realtime fan-out must never break the request path
         logger.warning("broadcast failed: %s", exc)
 
@@ -361,14 +422,14 @@ async def events_ws(websocket: WebSocket, token: str | None = Query(default=None
     # query param and is verified before the socket is accepted.
     try:
         payload = jwt.decode(token or "", JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        user = await db.users.find_one({"id": payload.get("sub")}, {"_id": 0, "role": 1, "disabled": 1})
+        user = await db.users.find_one({"id": payload.get("sub")}, {"_id": 0, "id": 1, "role": 1, "disabled": 1})
         if not user or user.get("disabled", False):
             raise ValueError("unknown user")
         role = str(user.get("role", "CITIZEN"))
     except Exception:
         await websocket.close(code=4401)
         return
-    await manager.connect(websocket, role)
+    await manager.connect(websocket, role, user["id"])
     try:
         while True:
             message = await websocket.receive_text()
@@ -504,6 +565,7 @@ async def audit(action: str, actor: str, target_id: str, detail: str) -> None:
 async def ensure_indexes() -> None:
     await db.incidents.create_index("created_at")
     await db.incidents.create_index("status")
+    await db.incidents.create_index([("location.coordinates", "2dsphere")])
     await db.sos.create_index("idempotency_key", unique=True)
     await db.responders.create_index("status")
     await db.assignments.create_index("status")
@@ -511,6 +573,9 @@ async def ensure_indexes() -> None:
     await db.users.create_index("email", unique=True)
     await db.alerts.create_index("active")
     await db.media.create_index("storage_path", unique=True)
+    await db.operator_assignments.create_index("operator_id")
+    await db.operator_assignments.create_index("status")
+    await db.operator_locations.create_index("operator_id", unique=True)
 
 
 async def seed_responders() -> None:
@@ -531,6 +596,17 @@ async def incident_doc(doc: dict[str, Any]) -> IncidentResponse:
 # ---------------------------------------------------------------------------
 # Public routes
 # ---------------------------------------------------------------------------
+# Root-level health for load balancers / health checks that don't use /api prefix
+@app.get("/health")
+async def health_root() -> dict[str, str]:
+    return {"status": "ok", "service": "crisisos-api"}
+
+# Silence /v1/models polling (common from AI proxies / model routers)
+@app.get("/v1/models")
+@app.head("/v1/models")
+async def v1_models() -> dict[str, list]:
+    return {"data": []}
+
 @api_router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "crisisos-api"}
@@ -900,6 +976,267 @@ async def analytics(user: dict[str, Any] = Depends(require_roles("OPERATOR", "AD
         "active_alerts": await db.alerts.count_documents({"active": True}),
         "responders_available": await db.responders.count_documents({"status": "AVAILABLE"}),
     }
+
+
+# ---------------------------------------------------------------------------
+# Operator → Citizen direct assignment endpoints
+# ---------------------------------------------------------------------------
+@api_router.get("/operator/incidents/nearest", response_model=list[NearestIncidentResponse])
+async def get_nearest_incidents(
+    lon: float = Query(..., ge=-180, le=180),
+    lat: float = Query(..., ge=-90, le=90),
+    max_distance_km: float = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=5, ge=1, le=10),
+    user: dict[str, Any] = Depends(require_roles("OPERATOR", "ADMIN")),
+) -> list[NearestIncidentResponse]:
+    """Get nearest unassigned SOS incidents to operator's location."""
+    # Update operator location
+    await db.operator_locations.update_one(
+        {"operator_id": user["id"]},
+        {"$set": {"operator_id": user["id"], "coordinates": [lon, lat], "updated_at": now_iso()}},
+        upsert=True,
+    )
+
+    # Find unassigned incidents (no operator_assignment, no responder assignment)
+    pipeline = [
+        {
+            "$geoNear": {
+                "near": {"type": "Point", "coordinates": [lon, lat]},
+                "distanceField": "distance_meters",
+                "maxDistance": max_distance_km * 1000,
+                "spherical": True,
+                "query": {
+                    "status": {"$nin": ["RESOLVED", "CLOSED", "CANCELLED"]},
+                    "assigned_responder_id": None,
+                },
+            }
+        },
+        {"$limit": limit},
+        {
+            "$lookup": {
+                "from": "operator_assignments",
+                "localField": "id",
+                "foreignField": "incident_id",
+                "as": "op_assignment",
+            }
+        },
+        {"$match": {"op_assignment": {"$size": 0}}},
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "reported_by",
+                "foreignField": "id",
+                "as": "citizen",
+            }
+        },
+        {"$unwind": {"path": "$citizen", "preserveNullAndEmptyArrays": True}},
+        {
+            "$project": {
+                "_id": 0,
+                "id": 1,
+                "sos_id": 1,
+                "title": 1,
+                "description": 1,
+                "type": 1,
+                "status": 1,
+                "severity": 1,
+                "location": 1,
+                "affected_people": 1,
+                "ai_analysis": 1,
+                "media": 1,
+                "reported_by": 1,
+                "reported_by_name": "$citizen.name",
+                "created_at": 1,
+                "distance_km": {"$divide": ["$distance_meters", 1000]},
+            }
+        },
+    ]
+
+    docs = await db.incidents.aggregate(pipeline).to_list(limit)
+    return [NearestIncidentResponse(**doc) for doc in docs]
+
+
+@api_router.post("/operator/assignments", response_model=OperatorAssignmentResponse, status_code=201)
+async def create_operator_assignment(
+    input: OperatorAssignmentCreate,
+    user: dict[str, Any] = Depends(require_roles("OPERATOR", "ADMIN")),
+) -> OperatorAssignmentResponse:
+    """Operator claims an incident (max 1 active assignment per operator)."""
+    # Check operator has no active assignment
+    active = await db.operator_assignments.find_one(
+        {"operator_id": user["id"], "status": {"$nin": ["COMPLETED", "CANCELLED"]}},
+        {"_id": 0},
+    )
+    if active:
+        raise HTTPException(status_code=409, detail="You already have an active assignment. Complete or cancel it first.")
+
+    # Verify incident exists and is unassigned
+    incident = await db.incidents.find_one(
+        {"id": input.incident_id, "status": {"$nin": ["RESOLVED", "CLOSED", "CANCELLED"]}, "assigned_responder_id": None},
+        {"_id": 0},
+    )
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found or already assigned/resolved")
+
+    # Check no other operator has claimed it
+    existing = await db.operator_assignments.find_one(
+        {"incident_id": input.incident_id, "status": {"$nin": ["COMPLETED", "CANCELLED"]}},
+        {"_id": 0},
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="Incident already claimed by another operator")
+
+    # Get citizen info
+    citizen = await db.users.find_one({"id": incident["reported_by"]}, {"_id": 0, "name": 1})
+    citizen_name = citizen["name"] if citizen else "Unknown"
+
+    # Create assignment
+    timestamp = now_iso()
+    assignment_doc = {
+        "id": str(uuid.uuid4()),
+        "operator_id": user["id"],
+        "operator_name": user["name"],
+        "incident_id": input.incident_id,
+        "citizen_id": incident["reported_by"],
+        "citizen_name": citizen_name,
+        "status": "ASSIGNED",
+        "assigned_at": timestamp,
+        "updated_at": timestamp,
+        "note": "Operator accepted citizen SOS",
+    }
+    await db.operator_assignments.insert_one(assignment_doc)
+
+    # Update incident status
+    await db.incidents.update_one(
+        {"id": input.incident_id},
+        {"$set": {"status": "OPERATOR_ASSIGNED", "updated_at": timestamp}},
+    )
+
+    # Audit
+    await audit("OPERATOR_ASSIGNED_CITIZEN", user["email"], input.incident_id, f"Assigned to citizen {citizen_name}")
+
+    # Broadcast to operator (no target = all operators/admins)
+    await broadcast("operator.assigned", {"assignment_id": assignment_doc["id"], "incident_id": input.incident_id, "operator_id": user["id"]})
+    # Broadcast to specific citizen
+    await broadcast("operator.assigned", {"assignment_id": assignment_doc["id"], "incident_id": input.incident_id, "operator_id": user["id"]}, target_user_id=assignment_doc["citizen_id"])
+
+    return OperatorAssignmentResponse(**assignment_doc, incident=IncidentResponse(**incident))
+
+
+@api_router.get("/operator/assignments/active", response_model=OperatorAssignmentResponse | None)
+async def get_active_operator_assignment(
+    user: dict[str, Any] = Depends(require_roles("OPERATOR", "ADMIN")),
+) -> OperatorAssignmentResponse | None:
+    """Get operator's current active assignment."""
+    assignment = await db.operator_assignments.find_one(
+        {"operator_id": user["id"], "status": {"$nin": ["COMPLETED", "CANCELLED"]}},
+        {"_id": 0},
+    )
+    if not assignment:
+        return None
+
+    incident = await db.incidents.find_one({"id": assignment["incident_id"]}, {"_id": 0})
+    return OperatorAssignmentResponse(**assignment, incident=IncidentResponse(**incident) if incident else None)
+
+
+@api_router.patch("/operator/location", response_model=dict[str, str])
+async def update_operator_location(
+    input: OperatorLocationUpdate,
+    user: dict[str, Any] = Depends(require_roles("OPERATOR", "ADMIN")),
+) -> dict[str, str]:
+    """Update operator's GPS location for nearest-incident queries."""
+    await db.operator_locations.update_one(
+        {"operator_id": user["id"]},
+        {"$set": {"operator_id": user["id"], "location": input.location, "updated_at": now_iso()}},
+        upsert=True,
+    )
+    # Broadcast location to citizen if assigned
+    active = await db.operator_assignments.find_one(
+        {"operator_id": user["id"], "status": {"$nin": ["COMPLETED", "CANCELLED"]}},
+        {"_id": 0, "incident_id": 1, "citizen_id": 1},
+    )
+    if active:
+        await broadcast("operator.location", {"operator_id": user["id"], "location": input.location, "incident_id": active["incident_id"]})
+    return {"status": "updated"}
+
+
+@api_router.patch("/operator/assignments/{assignment_id}/status", response_model=OperatorAssignmentResponse)
+async def update_operator_assignment_status(
+    assignment_id: str,
+    input: OperatorAssignmentStatus,
+    user: dict[str, Any] = Depends(require_roles("OPERATOR", "ADMIN")),
+) -> OperatorAssignmentResponse:
+    """Update operator assignment status (EN_ROUTE, ON_SCENE, COMPLETED, CANCELLED)."""
+    assignment = await db.operator_assignments.find_one({"id": assignment_id, "operator_id": user["id"]}, {"_id": 0})
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    allowed = {
+        "ASSIGNED": {"EN_ROUTE", "CANCELLED"},
+        "EN_ROUTE": {"ON_SCENE", "CANCELLED"},
+        "ON_SCENE": {"COMPLETED", "CANCELLED"},
+        "COMPLETED": set(),
+        "CANCELLED": set(),
+    }
+    if input.status not in allowed.get(assignment["status"], set()):
+        raise HTTPException(status_code=409, detail=f"Cannot move from {assignment['status']} to {input.status}")
+
+    timestamp = now_iso()
+    await db.operator_assignments.update_one(
+        {"id": assignment_id},
+        {"$set": {"status": input.status, "updated_at": timestamp, "note": input.note or f"Status changed to {input.status}"}},
+    )
+
+    # Update incident status
+    incident_status_map = {
+        "EN_ROUTE": "OPERATOR_EN_ROUTE",
+        "ON_SCENE": "OPERATOR_ON_SCENE",
+        "COMPLETED": "RESOLVED",
+        "CANCELLED": "CANCELLED",
+    }
+    await db.incidents.update_one(
+        {"id": assignment["incident_id"]},
+        {"$set": {"status": incident_status_map.get(input.status, "OPERATOR_ASSIGNED"), "updated_at": timestamp}},
+    )
+
+    # Audit
+    await audit(f"OPERATOR_ASSIGNMENT_{input.status}", user["email"], assignment["incident_id"], input.note or f"Operator assignment {input.status}")
+
+    # Broadcast
+    await broadcast("operator.assignment.updated", {"assignment_id": assignment_id, "incident_id": assignment["incident_id"], "status": input.status})
+    # Also notify citizen
+    await broadcast("operator.assignment.updated", {"assignment_id": assignment_id, "incident_id": assignment["incident_id"], "status": input.status}, target_user_id=assignment["citizen_id"])
+
+    updated = await db.operator_assignments.find_one({"id": assignment_id}, {"_id": 0})
+    incident = await db.incidents.find_one({"id": assignment["incident_id"]}, {"_id": 0})
+    return OperatorAssignmentResponse(**updated, incident=IncidentResponse(**incident) if incident else None)
+
+
+@api_router.post("/operator/assignments/{assignment_id}/locate-citizen", response_model=LocateCitizenResponse)
+async def locate_citizen(
+    assignment_id: str,
+    user: dict[str, Any] = Depends(require_roles("OPERATOR", "ADMIN")),
+) -> LocateCitizenResponse:
+    """Trigger loud sound on citizen's phone to help locate them."""
+    assignment = await db.operator_assignments.find_one({"id": assignment_id, "operator_id": user["id"]}, {"_id": 0})
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    if assignment["status"] not in {"ASSIGNED", "EN_ROUTE", "ON_SCENE"}:
+        raise HTTPException(status_code=409, detail="Assignment not in active state")
+
+    # Broadcast locate event to citizen via WebSocket (targeted to specific citizen)
+    await broadcast("operator.locate_citizen", {
+        "assignment_id": assignment_id,
+        "incident_id": assignment["incident_id"],
+        "citizen_id": assignment["citizen_id"],
+        "operator_id": user["id"],
+        "operator_name": user["name"],
+    }, target_user_id=assignment["citizen_id"])
+
+    await audit("OPERATOR_LOCATE_CITIZEN", user["email"], assignment["incident_id"], "Triggered locate sound on citizen device")
+
+    return LocateCitizenResponse(success=True, message="Locate signal sent to citizen's device")
 
 
 app.include_router(api_router)
