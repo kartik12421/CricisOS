@@ -57,7 +57,7 @@ export default function Index() {
   }, []);
 
   const signIn = async (email: string, password: string) => { setSession(await crisisApi.login(email, password)); };
-  const signUp = async (name: string, email: string, password: string) => { setSession(await crisisApi.signup(name, email, password)); };
+  const signUp = async (name: string, email: string, mobile: string, password: string) => { setSession(await crisisApi.signup(name, email, mobile, password)); };
   const logout = async () => { await crisisApi.logout(); setSession(null); };
 
   if (!booted) {
@@ -200,10 +200,12 @@ function CommandView({ signal }: { signal: number }) {
   const [responders, setResponders] = useState<Responder[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [alerts, setAlerts] = useState<CrisisAlert[]>([]);
   const [selected, setSelected] = useState<Incident | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [alertComposer, setAlertComposer] = useState(false);
+  const [announcementsEnabled, setAnnouncementsEnabled] = useState(true);
 
   // Operator assignment state
   const [nearestIncidents, setNearestIncidents] = useState<NearestIncident[]>([]);
@@ -215,16 +217,18 @@ function CommandView({ signal }: { signal: number }) {
   const refresh = useCallback(async () => {
     try {
       setError("");
-      const [i, r, a, k] = await Promise.all([
+      const [i, r, a, k, al] = await Promise.all([
         crisisApi.incidents(),
         crisisApi.responders(),
         crisisApi.assignments(),
         crisisApi.analytics(),
+        crisisApi.alerts(),
       ]);
       setIncidents(i);
       setResponders(r);
       setAssignments(a);
       setAnalytics(k);
+      setAlerts(al);
       setSelected((current) => i.find((item) => item.id === current?.id) ?? i[0] ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unable to load command queue.");
@@ -322,6 +326,19 @@ function CommandView({ signal }: { signal: number }) {
     }
   };
 
+  // Deactivate alert
+  const handleDeactivateAlert = async (alertId: string) => {
+    setBusy(true);
+    try {
+      await crisisApi.deactivateAlert(alertId);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to close alert.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const selectedAssignment = assignments.find((item) => item.incident_id === selected?.id && !["COMPLETED", "CANCELLED"].includes(item.status));
   const opsMarkers = compactMarkers([...incidents.map(incidentMarker), ...responders.map(responderMarker)]);
 
@@ -354,6 +371,9 @@ function CommandView({ signal }: { signal: number }) {
           <Text style={styles.screenTitle}>Command Center</Text>
         </View>
         <View style={styles.headerActions}>
+          <Pressable testID="announcements-toggle" onPress={() => setAnnouncementsEnabled(!announcementsEnabled)} accessibilityRole="switch" accessibilityState={{ checked: announcementsEnabled }} style={styles.iconButton}>
+            <Ionicons name={announcementsEnabled ? "volume-high-outline" : "volume-mute-outline"} size={18} color={announcementsEnabled ? colors.brandSecondary : colors.muted} />
+          </Pressable>
           <Pressable testID="publish-alert-button" onPress={() => setAlertComposer(true)} accessibilityRole="button" style={styles.iconButton}>
             <Ionicons name="megaphone-outline" size={18} color={colors.brandSecondary} />
           </Pressable>
@@ -367,6 +387,37 @@ function CommandView({ signal }: { signal: number }) {
         <Kpi label="ACTIVE" value={String(analytics?.active_incidents ?? 0)} tone="warning" />
         <Kpi label="CRITICAL" value={String(analytics?.critical_incidents ?? 0)} tone="error" />
         <Kpi label="APPROVED" value={String(analytics?.human_approvals ?? 0)} tone="success" />
+      </View>
+
+      {/* Active Alerts Management */}
+      <View style={styles.alertsManagementPanel}>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>ACTIVE ALERTS</Text>
+        </View>
+        {alerts.length === 0 ? (
+          <EmptyState icon="megaphone-outline" text="No active alerts. Publish one to notify citizens." />
+        ) : (
+          <View style={styles.alertsManagementList}>
+            {alerts.map((alert) => (
+              <View key={alert.id} style={styles.alertManagementCard}>
+                <View style={styles.alertManagementLeft}>
+                  <View style={[styles.alertSeverityDot, { backgroundColor: alert.severity === "CRITICAL" ? colors.error : alert.severity === "WARNING" ? colors.warning : colors.info }]} />
+                  <View style={styles.alertManagementInfo}>
+                    <Text style={styles.alertManagementTitle}>{alert.title}</Text>
+                    <Text style={styles.alertManagementMeta}>{alert.severity}{alert.radius_km ? ` · ${alert.radius_km} KM RADIUS` : ""} · {new Date(alert.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</Text>
+                    <Text style={styles.alertManagementMessage} numberOfLines={2}>{alert.message}</Text>
+                  </View>
+                </View>
+                {alert.active && (
+                  <Pressable testID={`deactivate-alert-${alert.id}`} onPress={() => handleDeactivateAlert(alert.id)} style={styles.deactivateButton} disabled={busy}>
+                    <Ionicons name="close-circle-outline" size={18} color={colors.onError} />
+                    <Text style={styles.deactivateButtonText}>CLOSE</Text>
+                  </Pressable>
+                )}
+              </View>
+            ))}
+          </View>
+        )}
       </View>
 
       {/* Operator Assignment Active */}
@@ -450,6 +501,12 @@ function CommandView({ signal }: { signal: number }) {
                   <View style={styles.nearestCardCenter}>
                     <Text style={styles.nearestTitle}>{incident.title}</Text>
                     <Text style={styles.nearestMeta}>{incident.reported_by_name ?? "Unknown citizen"} � {incident.type.replace("_", " ")} � {incident.affected_people} people</Text>
+                    {incident.reported_by_mobile && (
+                      <Text style={styles.nearestMobile}>
+                        <Ionicons name="call-outline" size={14} color={colors.brandSecondary} />
+                        {" "}{incident.reported_by_mobile}
+                      </Text>
+                    )}
                   </View>
                   <View style={styles.nearestCardRight}>
                     <Ionicons name="chevron-forward" size={20} color={colors.muted} />
@@ -481,6 +538,7 @@ function CommandView({ signal }: { signal: number }) {
             <Text style={styles.queueDescription} numberOfLines={2}>{incident.description}</Text>
             <View style={styles.queueFooter}>
               <Text style={styles.queueMeta}>{incident.affected_people} people � {incident.location.source ?? "UNKNOWN"}{incident.media?.length ? " � PHOTO" : ""}</Text>
+              {incident.reported_by_mobile && <Text style={styles.queueMobile}><Ionicons name="call-outline" size={13} color={colors.brandSecondary} /> {" "}{incident.reported_by_mobile}</Text>}
               <Ionicons name="chevron-forward" size={18} color={colors.muted} />
             </View>
           </Pressable>
@@ -496,6 +554,12 @@ function CommandView({ signal }: { signal: number }) {
             </View>
             <Badge text={`${Math.round(selected.ai_analysis.confidence * 100)}% CONF.`} tone="info" />
           </View>
+          {selected.reported_by_mobile && (
+            <View style={styles.reviewMobileRow}>
+              <Ionicons name="call-outline" size={18} color={colors.brandSecondary} />
+              <Text style={styles.reviewMobileText}>Citizen: {selected.reported_by_mobile}</Text>
+            </View>
+          )}
           <Text style={styles.reviewSummary}>{selected.ai_analysis.summary}</Text>
           {selected.media && selected.media.length > 0 ? <MediaThumbs media={selected.media} /> : null}
           {selected.ai_analysis.provider ? <Text style={styles.providerMeta}>ANALYSIS: {selected.ai_analysis.provider.toUpperCase()}</Text> : null}
@@ -570,7 +634,7 @@ function ResponderView({ signal }: { signal: number }) {
   }, [assignment]);
   const advance = async () => { if (!assignment || !next) return; setBusy(true); try { await crisisApi.updateAssignment(assignment.id, next, next === "EN_ROUTE" ? "Operational response started." : "Status updated from responder mission control."); await refresh(); } catch (e) { setError(e instanceof Error ? e.message : "Status update failed."); } finally { setBusy(false); } };
   const mapMarkers = compactMarkers([incident ? incidentMarker(incident) : null, pointMarker(selfPoint)]);
-  return <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}><View style={styles.sectionHeader}><View><Text style={styles.eyebrow}>UNIT / ALPHA RESPONSE</Text><Text style={styles.screenTitle}>Mission Control</Text></View><View style={styles.operationalPill}><View style={styles.onlineDot} /><Text style={styles.onlineText}>AVAILABLE</Text></View></View>{error ? <Notice text={error} tone="error" onPress={refresh} /> : null}<AlertsStrip alerts={alerts} />{!assignment || !incident ? <EmptyState icon="radio-outline" text="No active dispatches assigned to this unit." /> : <><View style={styles.missionBanner}><View style={styles.missionIcon}><Ionicons name="navigate" size={22} color={colors.onBrandPrimary} /></View><View style={styles.flex}><Text style={styles.eyebrow}>ACTIVE ASSIGNMENT</Text><Text style={styles.missionTitle}>{incident.title}</Text></View><Badge text={incident.severity} tone="error" /></View>{mapMarkers.length > 0 ? <CrisisMap testID="responder-map" markers={mapMarkers} height={200} /> : <View style={styles.mapPlaceholder}><Ionicons name="map-outline" size={42} color={colors.brandSecondary} /><Text style={styles.mapTitle}>TACTICAL LOCATION VIEW</Text><Text style={styles.mapText}>{incident.location.source === "CURRENT_GPS" ? "Live GPS coordinates received" : "Location source: " + (incident.location.source ?? "UNKNOWN")}</Text><View style={styles.mapGrid} /></View>}{locationBlocked ? <Notice text="Location sharing is blocked. Open Settings to enable live tracking." tone="info" actionLabel="OPEN" onPress={() => Linking.openSettings()} /> : null}{incident.media && incident.media.length > 0 ? <MediaThumbs media={incident.media} /> : null}<View style={styles.detailGrid}><Detail label="PEOPLE" value={String(incident.affected_people)} icon="people-outline" /><Detail label="STATUS" value={assignment.status.replace("_", " ")} icon="pulse-outline" /><Detail label="CAPABILITIES" value={incident.ai_analysis.required_capabilities.join(" · ").replaceAll("_", " ")} icon="construct-outline" /></View><View style={styles.missionPanel}><Text style={styles.sectionTitle}>MISSION BRIEF</Text><Text style={styles.reviewSummary}>{incident.ai_analysis.summary}</Text><View style={styles.secureRow}><Ionicons name="lock-closed-outline" size={16} color={colors.info} /><Text style={styles.secureText}>Operational location sharing activates during EN ROUTE and ON SCENE.</Text></View><Pressable testID="assignment-advance-button" onPress={advance} disabled={busy || !next} style={({ pressed }) => [styles.approveButton, pressed && styles.pressed, busy && styles.disabled]}>{busy ? <ActivityIndicator color={colors.onBrandPrimary} /> : <><Ionicons name={next === "COMPLETED" ? "checkmark-done" : "arrow-forward-circle"} size={21} color={colors.onBrandPrimary} /><Text style={styles.approveText}>{next === "COMPLETED" ? "COMPLETE ASSIGNMENT" : `MARK ${next?.replace("_", " ")}`}</Text></>}</Pressable></View></>}</ScrollView>;
+  return <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}><View style={styles.sectionHeader}><View><Text style={styles.eyebrow}>UNIT / ALPHA RESPONSE</Text><Text style={styles.screenTitle}>Mission Control</Text></View><View style={styles.operationalPill}><View style={styles.onlineDot} /><Text style={styles.onlineText}>AVAILABLE</Text></View></View>{error ? <Notice text={error} tone="error" onPress={refresh} /> : null}<AlertsStrip alerts={alerts} />{!assignment || !incident ? <EmptyState icon="radio-outline" text="No active dispatches assigned to this unit." /> : <><View style={styles.missionBanner}><View style={styles.missionIcon}><Ionicons name="navigate" size={22} color={colors.onBrandPrimary} /></View><View style={styles.flex}><Text style={styles.eyebrow}>ACTIVE ASSIGNMENT</Text><Text style={styles.missionTitle}>{incident.title}</Text></View><Badge text={incident.severity} tone="error" /></View>{mapMarkers.length > 0 ? <CrisisMap testID="responder-map" markers={mapMarkers} height={200} /> : <View style={styles.mapPlaceholder}><Ionicons name="map-outline" size={42} color={colors.brandSecondary} /><Text style={styles.mapTitle}>TACTICAL LOCATION VIEW</Text><Text style={styles.mapText}>{incident.location.source === "CURRENT_GPS" ? "Live GPS coordinates received" : "Location source: " + (incident.location.source ?? "UNKNOWN")}</Text><View style={styles.mapGrid} /></View>}{locationBlocked ? <Notice text="Location sharing is blocked. Open Settings to enable live tracking." tone="info" actionLabel="OPEN" onPress={() => Linking.openSettings()} /> : null}{incident.media && incident.media.length > 0 ? <MediaThumbs media={incident.media} /> : null}<View style={styles.detailGrid}><Detail label="PEOPLE" value={String(incident.affected_people)} icon="people-outline" /><Detail label="STATUS" value={assignment.status.replace("_", " ")} icon="pulse-outline" /><Detail label="CAPABILITIES" value={incident.ai_analysis.required_capabilities.join(" · ").replaceAll("_", " ")} icon="construct-outline" />{incident.reported_by_mobile && <Detail label="CITIZEN PHONE" value={incident.reported_by_mobile} icon="call-outline" />}</View><View style={styles.missionPanel}><Text style={styles.sectionTitle}>MISSION BRIEF</Text><Text style={styles.reviewSummary}>{incident.ai_analysis.summary}</Text><View style={styles.secureRow}><Ionicons name="lock-closed-outline" size={16} color={colors.info} /><Text style={styles.secureText}>Operational location sharing activates during EN ROUTE and ON SCENE.</Text></View><Pressable testID="assignment-advance-button" onPress={advance} disabled={busy || !next} style={({ pressed }) => [styles.approveButton, pressed && styles.pressed, busy && styles.disabled]}>{busy ? <ActivityIndicator color={colors.onBrandPrimary} /> : <><Ionicons name={next === "COMPLETED" ? "checkmark-done" : "arrow-forward-circle"} size={21} color={colors.onBrandPrimary} /><Text style={styles.approveText}>{next === "COMPLETED" ? "COMPLETE ASSIGNMENT" : `MARK ${next?.replace("_", " ")}`}</Text></>}</Pressable></View></>}</ScrollView>;
 }
 
 // --- Map marker builders ----------------------------------------------------
@@ -627,7 +691,7 @@ const useStyles = makeStyles((colors) => StyleSheet.create({
   actionButtonText: { color: colors.onBrandTertiary, fontSize: 12, fontWeight: "900", letterSpacing: 0.5 },
   actionButtonSecondary: { backgroundColor: colors.surfaceTertiary, borderColor: colors.brandSecondary },
   actionButtonSuccess: { backgroundColor: `${colors.success}18`, borderColor: colors.success },
-  actionButtonDanger: { backgroundColor: `${colors.error}18`, borderColor: colors.error },
+  actionButtonDanger: { backgroundColor: colors.error + "18", borderColor: colors.error },
   nearestPanel: { backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, borderRadius: 17, padding: 16, gap: 12, marginBottom: 8 },
   locationWaiting: { flexDirection: "row", alignItems: "center", gap: 8 },
   waitingText: { color: colors.muted, fontSize: 12 },
@@ -640,4 +704,21 @@ const useStyles = makeStyles((colors) => StyleSheet.create({
   nearestDistance: { color: colors.brandSecondary, fontSize: 11, fontWeight: "800" },
   nearestTitle: { color: colors.onSurface, fontSize: 14, fontWeight: "800" },
   nearestMeta: { color: colors.muted, fontSize: 11, marginTop: 3 },
+  nearestMobile: { color: colors.brandSecondary, fontSize: 10, marginTop: 2, flexDirection: "row", alignItems: "center", gap: 4 },
+  queueMobile: { color: colors.brandSecondary, fontSize: 10, marginTop: 2, flexDirection: "row", alignItems: "center", gap: 4 },
+  reviewMobileRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border },
+  reviewMobileText: { color: colors.brandSecondary, fontSize: 12, fontWeight: "700" },
+
+  // Alerts Management styles
+  alertsManagementPanel: { backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, borderRadius: 17, padding: 16, gap: 12, marginBottom: 8 },
+  alertsManagementList: { gap: 8 },
+  alertManagementCard: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", backgroundColor: colors.surfaceTertiary, borderWidth: 1, borderColor: colors.border, borderRadius: 13, padding: 12, gap: 10 },
+  alertManagementLeft: { flexDirection: "row", alignItems: "flex-start", gap: 10, flex: 1 },
+  alertSeverityDot: { width: 10, height: 10, borderRadius: 5, marginTop: 2, flexShrink: 0 },
+  alertManagementInfo: { flex: 1, minWidth: 0 },
+  alertManagementTitle: { color: colors.onSurface, fontSize: 14, fontWeight: "800" },
+  alertManagementMeta: { color: colors.muted, fontSize: 10, marginTop: 2 },
+  alertManagementMessage: { color: colors.onSurfaceSecondary, fontSize: 11, lineHeight: 16, marginTop: 4 },
+  deactivateButton: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, minHeight: 40, paddingHorizontal: 12, borderRadius: 10, backgroundColor: colors.error + "18", borderWidth: 1, borderColor: colors.error },
+  deactivateButtonText: { color: colors.error, fontSize: 11, fontWeight: "900", letterSpacing: 0.5 },
 }));

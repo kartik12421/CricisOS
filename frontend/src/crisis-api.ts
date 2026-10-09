@@ -7,13 +7,14 @@ export type Role = "CITIZEN" | "RESPONDER" | "OPERATOR" | "ADMIN" | "ORGANIZATIO
 export type EmergencyType = "GENERAL" | "TRAPPED_PERSON" | "MEDICAL" | "FIRE" | "FLOOD" | "ACCIDENT" | "BUILDING_COLLAPSE" | "MISSING_PERSON" | "OTHER";
 export type AlertSeverity = "INFO" | "WARNING" | "CRITICAL";
 
-export type Session = { user_id: string; name: string; email: string; role: Role; organization_id: string };
+export type Session = { user_id: string; name: string; email: string; role: Role; organization_id: string; mobile_number?: string };
 export type IncidentMedia = { path: string; content_type?: string };
 export type Incident = {
   id: string; sos_id: string; title: string; description: string; type: EmergencyType; status: string;
   severity: string; location: { source?: string; coordinates?: number[]; accuracy?: number | null };
   affected_people: number; ai_analysis: { summary: string; required_capabilities: string[]; confidence: number; risks: string[]; human_approval_required: boolean; provider?: string };
   media?: IncidentMedia[]; assigned_responder_id?: string | null; created_at: string; updated_at: string;
+  reported_by_mobile?: string;
 };
 export type Responder = { id: string; name: string; team: string; skills: string[]; status: string; distance_km: number; current_location?: Record<string, unknown> | null };
 export type Assignment = { id: string; incident_id: string; responder_id: string; responder_name: string; status: string; approved_by: string; assigned_at: string; updated_at: string; note: string };
@@ -56,11 +57,12 @@ export type NearestIncident = {
   media?: IncidentMedia[];
   reported_by: string | null;
   reported_by_name: string | null;
+  reported_by_mobile?: string;
   created_at: string;
   distance_km: number;
 };
 
-type TokenResponse = { access_token: string; token_type: string; user: { id: string; name: string; email: string; role: Role; organization_id: string } };
+type TokenResponse = { access_token: string; token_type: string; user: { id: string; name: string; email: string; role: Role; organization_id: string; mobile_number?: string } };
 
 const configuredBaseUrl = Constants.expoConfig?.extra?.backendUrl ?? process.env.EXPO_PUBLIC_BACKEND_URL ?? process.env.EXPO_BACKEND_URL;
 // Expo's public env values are not always inlined in web builds. In local web
@@ -88,7 +90,7 @@ export async function clearAuth(): Promise<void> {
 }
 
 function toSession(res: TokenResponse): Session {
-  return { user_id: res.user.id, name: res.user.name, email: res.user.email, role: res.user.role, organization_id: res.user.organization_id };
+  return { user_id: res.user.id, name: res.user.name, email: res.user.email, role: res.user.role, organization_id: res.user.organization_id, mobile_number: res.user.mobile_number };
 }
 
 async function persistAuth(res: TokenResponse): Promise<Session> {
@@ -234,7 +236,7 @@ export function subscribeEvents(onEvent: (event: CrisisEvent) => void, onState?:
 
 export const crisisApi = {
   login: (email: string, password: string) => request<TokenResponse>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }).then(persistAuth),
-  signup: (name: string, email: string, password: string) => request<TokenResponse>("/auth/signup", { method: "POST", body: JSON.stringify({ name, email, password }) }).then(persistAuth),
+  signup: (name: string, email: string, mobile: string, password: string) => request<TokenResponse>("/auth/signup", { method: "POST", body: JSON.stringify({ name, email, mobile_number: mobile, password }) }).then(persistAuth),
   me: () => request<{ id: string; email: string; role: Role }>("/auth/me"),
   logout: () => clearAuth(),
   incidents: () => request<Incident[]>("/incidents"),

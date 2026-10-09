@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import uuid
@@ -19,7 +20,7 @@ from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Req
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import Response
@@ -113,10 +114,32 @@ def get_object(path: str) -> tuple[bytes, str]:
 # ---------------------------------------------------------------------------
 # Auth: bcrypt password hashing + JWT bearer tokens, roles re-read per request.
 # ---------------------------------------------------------------------------
+def normalize_mobile(value: str) -> str:
+    """Normalize mobile number: keep digits and leading +, strip spaces/dashes/parentheses."""
+    value = value.strip()
+    if value.startswith("+"):
+        return "+" + "".join(ch for ch in value[1:] if ch.isdigit())
+    return "".join(ch for ch in value if ch.isdigit())
+
+
 class SignupRequest(BaseModel):
     name: str = Field(min_length=2, max_length=80)
     email: EmailStr
     password: str = Field(min_length=12, max_length=128)
+    mobile_number: str = Field(min_length=10, max_length=20)
+    
+    @field_validator("mobile_number", mode="before")
+    @classmethod
+    def _normalize_mobile(cls, v: str) -> str:
+        return normalize_mobile(v)
+    
+    @field_validator("mobile_number")
+    @classmethod
+    def _validate_mobile(cls, v: str) -> str:
+        # After normalization: optional + followed by 10-15 digits
+        if not re.match(r"^\+?\d{10,15}$", v):
+            raise ValueError("Mobile number must be 10-15 digits (optionally starting with +)")
+        return v
 
 
 class LoginRequest(BaseModel):
@@ -130,6 +153,7 @@ class AuthUser(BaseModel):
     email: str
     role: str
     organization_id: str
+    mobile_number: str | None = None
 
 
 class TokenResponse(BaseModel):
@@ -146,7 +170,14 @@ def make_token(user: dict[str, Any]) -> str:
 
 
 def auth_user(doc: dict[str, Any]) -> AuthUser:
-    return AuthUser(id=doc["id"], name=doc["name"], email=doc["email"], role=doc["role"], organization_id=doc.get("organization_id", "default"))
+    return AuthUser(
+        id=doc["id"],
+        name=doc["name"],
+        email=doc["email"],
+        role=doc["role"],
+        organization_id=doc.get("organization_id", "default"),
+        mobile_number=doc.get("mobile_number"),
+    )
 
 
 async def resolve_user(credentials: HTTPAuthorizationCredentials | None, token_query: str | None) -> dict[str, Any]:
@@ -182,13 +213,13 @@ async def seed_users() -> None:
     # set, privileged passwords are rotated to it on every startup; without it
     # a fresh account gets a random secret nobody knows.
     seeds = [
-        ("citizen@crisisos.app", "DEMO_CITIZEN_PASSWORD", "Maya Rao", "CITIZEN"),
-        ("responder@crisisos.app", "DEMO_RESPONDER_PASSWORD", "Alex Morgan", "RESPONDER"),
-        ("operator@crisisos.app", "DEMO_OPERATOR_PASSWORD", "Jordan Lee", "OPERATOR"),
-        ("admin@crisisos.app", "DEMO_ADMIN_PASSWORD", "Sam Rivera", "ADMIN"),
+        ("citizen@crisisos.app", "DEMO_CITIZEN_PASSWORD", "Maya Rao", "CITIZEN", "+15551234567"),
+        ("responder@crisisos.app", "DEMO_RESPONDER_PASSWORD", "Alex Morgan", "RESPONDER", "+15552345678"),
+        ("operator@crisisos.app", "DEMO_OPERATOR_PASSWORD", "Jordan Lee", "OPERATOR", "+15553456789"),
+        ("admin@crisisos.app", "DEMO_ADMIN_PASSWORD", "Sam Rivera", "ADMIN", "+15554567890"),
     ]
     default_password = "CrisisOS2026!"  # 13 chars, well under 72 bytes
-    for email, env_key, name, role in seeds:
+    for email, env_key, name, role, mobile in seeds:
         password = os.environ.get(env_key)
         if password:
             password = password[:72]  # bcrypt max 72 bytes
@@ -200,6 +231,7 @@ async def seed_users() -> None:
             "id": str(uuid.uuid4()), "email": email, "name": name, "role": role,
             "password_hash": pwd_context.hash(password or default_password),
             "organization_id": "crisisos-demo", "disabled": False, "created_at": now_iso(),
+            "mobile_number": mobile,
         })
 
 
@@ -290,6 +322,7 @@ class NearestIncidentResponse(BaseModel):
     media: list[dict[str, Any]] = []
     reported_by: str | None = None
     reported_by_name: str | None = None
+    reported_by_mobile: str | None = None
     created_at: str
     distance_km: float
 
@@ -330,6 +363,7 @@ class IncidentResponse(BaseModel):
     ai_analysis: dict[str, Any]
     media: list[dict[str, Any]] = []
     reported_by: str | None = None
+    reported_by_mobile: str | None = None
     assigned_responder_id: str | None = None
     created_at: str
     updated_at: str
@@ -628,6 +662,7 @@ async def signup(input: SignupRequest, request: Request) -> TokenResponse:
         "id": str(uuid.uuid4()), "email": email, "name": input.name.strip(), "role": "CITIZEN",
         "password_hash": pwd_context.hash(input.password), "organization_id": "crisisos-demo",
         "disabled": False, "created_at": now_iso(),
+        "mobile_number": input.mobile_number.strip(),
     }
     await db.users.insert_one(dict(doc))
     await audit("USER_REGISTERED", email, doc["id"], "Citizen account self-registered")
@@ -782,7 +817,9 @@ async def create_sos(input: SOSCreate, user: dict[str, Any] = Depends(get_curren
         "description": input.description or "Citizen reported an emergency.",
         "type": ai["type"], "status": "ACKNOWLEDGED", "severity": ai["severity"],
         "location": input.location, "affected_people": input.affected_people,
-        "ai_analysis": ai, "media": media_docs, "reported_by": user["id"], "assigned_responder_id": None,
+        "ai_analysis": ai, "media": media_docs, "reported_by": user["id"],
+        "reported_by_mobile": user.get("mobile_number"),
+        "assigned_responder_id": None,
         "created_at": created_at, "updated_at": created_at,
     }
     sos_doc = {"id": sos_id, "incident_id": incident_id, "idempotency_key": input.idempotency_key, "created_at": created_at}
@@ -1046,6 +1083,7 @@ async def get_nearest_incidents(
                 "media": 1,
                 "reported_by": 1,
                 "reported_by_name": "$citizen.name",
+                "reported_by_mobile": "$citizen.mobile_number",
                 "created_at": 1,
                 "distance_km": {"$divide": ["$distance_meters", 1000]},
             }

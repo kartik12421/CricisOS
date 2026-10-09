@@ -26,6 +26,7 @@ export function AuthScreen({
   onSignUp: (
     name: string,
     email: string,
+    mobile: string,
     password: string
   ) => Promise<void>;
 }) {
@@ -39,6 +40,7 @@ export function AuthScreen({
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [mobile, setMobile] = useState("");
   const [password, setPassword] = useState("");
 
   const [showPassword, setShowPassword] = useState(false);
@@ -56,6 +58,7 @@ export function AuthScreen({
         await onSignUp(
           name.trim(),
           email.trim(),
+          mobile.trim(),
           password
         );
       }
@@ -337,6 +340,36 @@ export function AuthScreen({
                   placeholder="Enter your full name"
                   placeholderTextColor="#687380"
                   autoCapitalize="words"
+                  style={styles.input}
+                />
+              </View>
+            </View>
+          ) : null}
+
+          {/* ================= SIGNUP MOBILE ================= */}
+
+          {mode === "signup" ? (
+            <View style={styles.field}>
+              <Text style={styles.label}>
+                MOBILE NUMBER
+              </Text>
+
+              <View style={styles.inputWrapper}>
+                <Ionicons
+                  name="call-outline"
+                  size={19}
+                  color="#7F8996"
+                />
+
+                <TextInput
+                  testID="auth-mobile-input"
+                  value={mobile}
+                  onChangeText={setMobile}
+                  placeholder="Enter mobile number (e.g., +15551234567)"
+                  placeholderTextColor="#687380"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="phone-pad"
                   style={styles.input}
                 />
               </View>
