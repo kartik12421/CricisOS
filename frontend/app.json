@@ -1,12 +1,15 @@
 {
   "expo": {
-    "name": "frontend",
+    "name": "CrisisOS",
     "slug": "frontend",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "frontend",
     "userInterfaceStyle": "automatic",
+    "extra": {
+      "backendUrl": "http://10.245.105.189:8000"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.emergent.crisisai.r45r8y"
@@ -37,8 +40,19 @@
       "expo-font",
       "expo-image",
       "expo-secure-store",
-      ["expo-location", { "locationWhenInUsePermission": "Share your location so responders can reach you during an SOS." }],
-      ["expo-image-picker", { "photosPermission": "Attach a photo so responders can see the emergency scene.", "cameraPermission": "Take a photo so responders can see the emergency scene." }],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Share your location so responders can reach you during an SOS."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Attach a photo so responders can see the emergency scene.",
+          "cameraPermission": "Take a photo so responders can see the emergency scene."
+        }
+      ],
       "expo-web-browser",
       "expo-status-bar"
     ],

@@ -117,10 +117,10 @@ export function AuthScreen({
 
         {/* System status */}
         <View style={styles.systemStatus}>
-          <View style={styles.statusDot} />
+          
 
           <Text style={styles.statusText}>
-            SYSTEM OPERATIONAL
+            
           </Text>
         </View>
       </View>
@@ -191,8 +191,15 @@ export function AuthScreen({
 
             <Feature
               icon="flash-outline"
-              title="Real-time"
+              title="Real-time           "
               subtitle="Coordination"
+              colors={colors}
+            />
+
+            <Feature
+              icon="alert-outline"
+              title="SOS"
+              subtitle="Citizen alert"
               colors={colors}
             />
           </View>
